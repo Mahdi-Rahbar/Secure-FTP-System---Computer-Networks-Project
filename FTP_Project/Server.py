@@ -1,3 +1,5 @@
+# Mahdi Rahbar && Kiarash Gilanian
+
 import socket
 import threading
 
@@ -35,8 +37,7 @@ class FTPThreadServer(threading.Thread):
     def run(self):
         try:
             print('Client connected: ' + str(self.client_address) + '\n')
-
-            # Perform authentication or registration
+            
             if not self.authenticate():
                 self.client.send(b"530 Authentication failed or registration unsuccessful. Disconnecting.\r\n")
                 self.client.close()
