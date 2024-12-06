@@ -104,3 +104,38 @@ class FTPclient:
 
         except Exception as e:
             print("Error during authentication:", str(e))
+
+    # Retrieves and displays the directory listing from the server using the specified path.
+    def LIST(self, path):
+        try:
+            self.connect_datasock()
+
+            while True:
+                dirlist = self.datasock.recv(1024).decode('utf-8')
+                if not dirlist:
+                    break
+                sys.stdout.write(dirlist)
+                sys.stdout.flush()
+        except Exception as e:
+            print('Error during LIST:', str(e))
+        finally:
+            self.datasock.close()
+
+    # Downloads a file from the server and saves it to the current directory using the specified path.
+    def RETR(self, path):
+        print(f"Retrieving {path} from the server...")
+        try:
+            self.connect_datasock()
+
+            # Extract only the filename from the path
+            filename = os.path.basename(path)  # Use only the filename
+            with open(filename, 'wb') as f:  # Save file in the current directory
+                while True:
+                    data = self.datasock.recv(1024)
+                    if not data:
+                        break
+                    f.write(data)
+        except Exception as e:
+            print('Error during RETR:', str(e))
+        finally:
+            self.datasock.close()
