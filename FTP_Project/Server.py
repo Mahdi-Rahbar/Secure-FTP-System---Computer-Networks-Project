@@ -103,7 +103,7 @@ class FTPThreadServer(threading.Thread):
 
             # Check if the first 5 characters are not 'USER '
             if username[:5] != 'USER ':
-                self.client.send(b"550 Invalid command. Username must start with 'USER '.\r\n")
+                self.client.send(b"550 Invalid command. For input username, must start with 'USER '.\r\n")
                 continue
 
             # Check if the username (after 'USER ') is not in credentials
@@ -117,8 +117,8 @@ class FTPThreadServer(threading.Thread):
 
                 # If password is 'CHANGE', break the loop (user can change their password)
                 if password == "CHANGE":
-                    self.client.send(b"230 Password change process initiated.\r\n")
-                    break  # You can implement further logic for password change here
+                    self.client.send(b"230 You will return to the previous step to change your username.\r\n")
+                    break
 
                 # Check if password is less than 6 characters
                 if len(password) < 6:
