@@ -139,3 +139,31 @@ class FTPclient:
             print('Error during RETR:', str(e))
         finally:
             self.datasock.close()
+
+    # Uploads a local file to the server using the STOR command.
+    def STOR(self, path):
+
+        print(f"Uploading {path} to the server...")
+        try:
+            if not os.path.isfile(path):
+                print(f"Error: File '{path}' does not exist.")
+                return
+
+            self.sock.send(f"STOR {os.path.basename(path)}\r\n".encode('utf-8'))
+            response = self.sock.recv(1024).decode('utf-8')
+            print(response)
+
+            if "150" in response:
+                self.connect_datasock()
+                with open(path, 'rb') as f:
+                    while True:
+                        data = f.read(1024)
+                        if not data:
+                            break
+                        self.datasock.send(data)
+                self.datasock.close()
+                print(f"File '{path}' uploaded successfully.")
+            else:
+                print("Error:", response)
+        except Exception as e:
+            print("Error during STOR:", str(e))
