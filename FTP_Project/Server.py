@@ -194,6 +194,86 @@ class FTPThreadServer(threading.Thread):
         else:
             # Relative path: Prepend '/' and join with the current working directory
             return os.path.join(self.cwd, path_to_file_or_directory)
+        
+    def hide_abs_path(self, path_to):
+        relative_path = path_to[len(self.server_dir):]
+
+        # Ensure the path starts with a '/'
+        if not relative_path.startswith('/'):
+            relative_path = '/' + relative_path
+        
+        return relative_path
+
+    def SHARE(self, cmd):
+        """Handles the SHARE command."""
+        try:
+            # Extract directory or file address
+            _, file_or_dir_path = cmd.split(' ', 1)
+            
+            if not file_or_dir_path:
+                self.client.send(b'501 Missing arguments <file_or_directory_name>.\r\n')
+                return
+            
+            # Perform access check before proceeding
+            if not self.access_check(f"SHARE {file_or_dir_path}"):
+                # access_check already sends an appropriate error message if access is denied
+                return
+
+            fname = self.resolve_path(file_or_dir_path)
+            if not os.path.exists(fname):
+                self.client.send(b'550 File or directory not found.\r\n')
+                return
+
+            # Ask for the username to share with
+            self.client.send(b"332 Enter the username to share with:\r")
+            target_username = self.client.recv(1024).decode('utf-8').strip()
+
+            # Check if the target user exists
+            target_json_path = os.path.join(self.server_dir, f"home_{target_username}.json")
+            if not os.path.exists(target_json_path):
+                self.client.send(b"530 Invalid username. User does not exist.\r\n")
+                return
+
+            # Ask for the access level as a 4-bit number
+            self.client.send(b"332 Enter the access level as a number (0-15):\r")
+            try:
+                access_level = int(self.client.recv(1024).decode('utf-8').strip())
+            except ValueError:
+                self.client.send(b"530 Invalid input. Please enter a number between 0 and 15.\r\n")
+                return
+
+            if not (0 <= access_level <= 15):
+                self.client.send(b"530 Invalid access level. Number must be between 0 and 15.\r\n")
+                return
+
+            # Decode access levels from the 4-bit number
+            permissions = {
+                "Read": bool(access_level & 8),  # 1000
+                "Write": bool(access_level & 4),  # 0100
+                "Create": bool(access_level & 2),  # 0010
+                "Delete": bool(access_level & 1),  # 0001
+            }
+
+            # Update the shared user's JSON file with the new access level
+            with open(target_json_path, 'r') as json_file:
+                target_data = json.load(json_file)
+
+            # Add the file or directory access for the target user
+            if "home" not in target_data:
+                target_data["home"] = {"path": {}}
+            if "path" not in target_data["home"]:
+                target_data["home"]["path"] = {}
+
+            # Add or update permissions for the shared path
+            target_data["home"]["path"][fname] = permissions
+
+            with open(target_json_path, 'w') as json_file:
+                json.dump(target_data, json_file)
+
+            self.client.send(b"230 File or directory shared successfully with the specified access level.\r\n")
+        except Exception as e:
+            print(f"ERROR in SHARE command: {e}")
+            self.client.send(b"550 An error occurred while processing the SHARE command.\r\n")
 
     def access_check(self, cmd, cdup=False):
         try:
@@ -288,7 +368,6 @@ class FTPThreadServer(threading.Thread):
             self.close_datasock()
             self.client.close()
             quit()
-
 
 class FTPserver:
     def __init__(self, port, data_port):
