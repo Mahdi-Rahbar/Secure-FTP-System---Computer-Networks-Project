@@ -275,6 +275,66 @@ class FTPThreadServer(threading.Thread):
             print(f"ERROR in SHARE command: {e}")
             self.client.send(b"550 An error occurred while processing the SHARE command.\r\n")
 
+    def UNSHARE(self, cmd):
+        """Handles the UNSHARE command."""
+        try:
+            # Extract the file or directory path
+            try:
+                _, file_or_dir_path = cmd.split(' ', 1)
+            except ValueError:
+                self.client.send(b'501 Missing arguments <file_or_directory_name>.\r\n')
+                return
+
+            if not file_or_dir_path:
+                self.client.send(b'501 Missing arguments <file_or_directory_name>.\r\n')
+                return
+
+            # Perform access check before proceeding
+            if not self.access_check(f"UNSHARE {file_or_dir_path}"):
+                # access_check already sends an appropriate error message if access is denied
+                return
+
+            fname = self.resolve_path(file_or_dir_path)
+            if not os.path.exists(fname):
+                self.client.send(b'550 File or directory not found.\r\n')
+                return
+
+            # Ask for the username to unshare with
+            self.client.send(b"332 Enter the username to unshare with:\r")
+            target_username = self.client.recv(1024).decode('utf-8').strip()
+
+            # Check if the target user exists
+            target_json_path = os.path.join(self.server_dir, f"home_{target_username}.json")
+            if not os.path.exists(target_json_path):
+                self.client.send(b"530 Invalid username. User does not exist.\r\n")
+                return
+
+            # Read the target user's JSON file
+            with open(target_json_path, 'r') as json_file:
+                target_data = json.load(json_file)
+
+            # Check if the file or directory is shared with the user
+            permissions = target_data.get("home", {}).get("path", {}).get(fname)
+            if not permissions:
+                self.client.send(b"550 The username does not have any permissions for the specified file or directory.\r\n")
+                return
+
+            # Check if the username has at least one permission
+            if any(permissions.values()):
+                # Remove the entry for the unshared file or directory
+                del target_data["home"]["path"][fname]
+
+                # Write the updated data back to the JSON file
+                with open(target_json_path, 'w') as json_file:
+                    json.dump(target_data, json_file)
+
+                self.client.send(b"230 File or directory successfully unshared and removed from the user's permissions.\r\n")
+            else:
+                self.client.send(b"550 The username does not have any permissions for the specified file or directory.\r\n")
+        except Exception as e:
+            print(f"ERROR in UNSHARE command: {e}")
+            self.client.send(b"550 An error occurred while processing the UNSHARE command.\r\n")
+
     def access_check(self, cmd, cdup=False):
         try:
             command = cmd.split(' ', 1)[0].upper()
@@ -288,7 +348,7 @@ class FTPThreadServer(threading.Thread):
                 self.client.send(b"550 Path does not exist.\r\n")
                 return False
             
-            if command == "SHARE":
+            if command == "SHARE" or command == "UNSHARE":
                 # Get the user's home directory prefix
                 user_home_prefix = f"home_{self.current_username}"
                 
@@ -296,7 +356,7 @@ class FTPThreadServer(threading.Thread):
                 if path.startswith(os.path.join(self.server_dir, user_home_prefix)):
                     return True
                 else:
-                    print("You cannot share a file or directory outside of your home directory.")
+                    self.client.send(b"You cannot share or unshare a file or directory outside of your home directory.\r\n")
                     return False
 
 
