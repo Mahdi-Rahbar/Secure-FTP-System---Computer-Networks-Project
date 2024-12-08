@@ -27,10 +27,61 @@ class FTPclient:
             print('Connection to', self.address, ':', self.port, 'failed:', str(e))
             self.close_client()
 
-
+    # Establishes a data connection to the server using the specified address and data port.
     def connect_datasock(self):
         self.datasock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.datasock.connect((self.address, self.data_port))
+
+    # Closes the socket connection and terminates the FTP client.
+    def close_client(self):
+        print('Closing socket connection...')
+        try:
+            self.sock.close()
+        except:
+            pass
+        print('FTP client terminating...')
+        sys.exit()
+
+    # Manages the client lifecycle, including connection, authentication, and executing commands in a loop.
+    def start(self):
+        try:
+            self.create_connection()
+        except Exception as e:
+            print('Error during connection:', str(e))
+            self.close_client()
+
+        if not self.authenticate():
+            print("Authentication failed. Exiting.")
+            self.close_client()
+
+        while True:
+            try:
+                command = input("Enter your command: ")
+                if not command:
+                    print('Need a command.')
+                    continue
+            except KeyboardInterrupt:
+                self.close_client()
+
+            cmd = command[:4].strip().upper()
+            path = command[4:].strip()
+
+            try:
+                self.sock.send(command.encode('utf-8'))
+                data = self.sock.recv(1024).decode('utf-8')
+                print(data)
+
+                if cmd == 'QUIT':
+                    self.close_client()
+                elif cmd in ('LIST', 'STOR', 'RETR'):
+                    if data and data[:3] == '125':
+                        func = getattr(self, cmd)
+                        func(path)
+                        data = self.sock.recv(1024).decode('utf-8')
+                        print(data)
+            except Exception as e:
+                print('Error:', str(e))
+                self.close_client()
 
     # Manages user authentication and registration by handling server communication and user input.
     def authenticate(self):
@@ -127,9 +178,8 @@ class FTPclient:
         try:
             self.connect_datasock()
 
-            # Extract only the filename from the path
-            filename = os.path.basename(path)  # Use only the filename
-            with open(filename, 'wb') as f:  # Save file in the current directory
+            filename = os.path.basename(path)
+            with open(filename, 'wb') as f:
                 while True:
                     data = self.datasock.recv(1024)
                     if not data:
@@ -167,3 +217,25 @@ class FTPclient:
                 print("Error:", response)
         except Exception as e:
             print("Error during STOR:", str(e))
+
+
+
+def main():
+    address = input("Destination address - if left empty, default address is localhost: ")
+    if not address:
+        address = 'localhost'
+
+    port = input("Port - if left empty, default port is 10021: ")
+    if not port:
+        port = 10021
+
+    data_port = input("Data port - if left empty, default port is 10020: ")
+    if not data_port:
+        data_port = 10020
+
+    ftpClient = FTPclient(address, port, data_port)
+    ftpClient.start()
+
+
+if __name__ == "__main__":
+    main()
