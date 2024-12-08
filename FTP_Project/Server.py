@@ -187,6 +187,97 @@ class FTPThreadServer(threading.Thread):
             print('ERROR: ' + str(self.client_address) + ': ' + str(e))
             self.QUIT('')
 
+    def resolve_path(self, path_to_file_or_directory):
+        if path_to_file_or_directory.startswith('/'):
+            # Absolute path: Join with the server directory
+            return os.path.join(self.server_dir, path_to_file_or_directory.lstrip('/'))
+        else:
+            # Relative path: Prepend '/' and join with the current working directory
+            return os.path.join(self.cwd, path_to_file_or_directory)
+
+    def access_check(self, cmd, cdup=False):
+        try:
+            command = cmd.split(' ', 1)[0].upper()
+            raw_path = cmd.rsplit(' ', 1)[-1].strip()
+
+            # Resolve the raw path to an absolute path
+            path = self.resolve_path(raw_path)
+
+            # Ensure the path exists
+            if not os.path.exists(path):
+                self.client.send(b"550 Path does not exist.\r\n")
+                return False
+            
+            if command == "SHARE":
+                # Get the user's home directory prefix
+                user_home_prefix = f"home_{self.current_username}"
+                
+                # Check if the path starts with the user's home directory
+                if path.startswith(os.path.join(self.server_dir, user_home_prefix)):
+                    return True
+                else:
+                    print("You cannot share a file or directory outside of your home directory.")
+                    return False
+
+
+            # Load user's access permissions from their JSON file
+            user_json_path = os.path.join(self.server_dir, f"home_{self.current_username}.json")
+            if not os.path.exists(user_json_path):
+                self.client.send(b"550 User configuration not found.\r\n")
+                return False
+
+            with open(user_json_path, 'r') as json_file:
+                user_data = json.load(json_file)
+
+            # Extract access paths and permissions
+            user_access_paths = user_data.get("home", {}).get("path", {})
+            parent_dir = os.path.dirname(self.cwd)
+
+            # If checking CDUP, validate Read permission on the parent directory
+            if cdup:
+                # Check if parent_dir starts with any path in user_access_paths
+                for access_path in user_access_paths:
+                    if parent_dir.startswith(access_path):
+                        access = user_access_paths[access_path]
+                        if access.get("Read", True):
+                            return True
+
+                self.client.send(b"530 Insufficient permissions to access parent directory.\r\n")
+                return False
+
+            # Determine required permissions based on the command
+            required_permissions = {
+                "LIST": ["Read"],
+                "RETR": ["Read"],
+                "STOR": ["Write", "Create", "Delete"],
+                "DELE": ["Delete"],
+                "MKD": ["Write", "Create"],
+                "RMD": ["Delete"],
+                "CWD": ["Read"],
+            }.get(command, [])
+
+            matching_permissions = {"Read": False, "Write": False, "Create": False, "Delete": False}
+
+            for access_path in user_access_paths:
+                if path.startswith(access_path):
+                    # Union permissions for matching paths
+                    access = user_access_paths[access_path]
+                    for permission in matching_permissions:
+                        matching_permissions[permission] = matching_permissions[permission] or access.get(permission, False)
+
+            # Check if the user has all required permissions
+            for permission in required_permissions:
+                if not matching_permissions.get(permission, False):
+                    self.client.send(b"530 Insufficient permissions.\r\n")
+                    return False
+
+            return True
+
+        except Exception as e:
+            print(f"ERROR in access_check: {e}")
+            self.client.send(b"550 An error occurred while checking permissions.\r\n")
+            return False
+
     def QUIT(self, cmd):
         try:
             self.client.send(b'221 Goodbye.\r\n')
