@@ -218,6 +218,41 @@ class FTPclient:
         except Exception as e:
             print("Error during STOR:", str(e))
 
+    # Shares a file or directory with another user.
+    def SHARE(self, command):
+
+        print(f"Sharing: {command}")
+        try:
+            self.sock.send(f"SHARE {command}\r\n".encode('utf-8'))
+            response = self.sock.recv(1024).decode('utf-8')
+            print(response)
+        except Exception as e:
+            print("Error during SHARE:", str(e))
+
+    # Removes sharing permissions for a file or directory.
+    def UNSHARE(self, command):
+
+        print(f"Unsharing: {command}")
+        try:
+            self.sock.send(f"UNSHARE {command}\r\n".encode('utf-8'))
+            response = self.sock.recv(1024).decode('utf-8')
+            print(response)
+        except Exception as e:
+            print("Error during UNSHARE:", str(e))
+
+    # Displays shared files and directories.
+    def SHWM(self):
+
+        print("Displaying shared files and directories...")
+        try:
+            self.sock.send(b"SHWM\r\n")
+            response = self.sock.recv(1024).decode('utf-8')
+            print(response)
+        except Exception as e:
+            print("Error during SHWM:", str(e))
+
+
+
 
 
 def main():
