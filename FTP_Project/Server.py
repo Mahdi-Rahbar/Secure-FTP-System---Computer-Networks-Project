@@ -36,7 +36,7 @@ class FTPThreadServer(threading.Thread):
     def register_user(self):
         """Handles user registration."""
         while True:
-            self.client.send(b"332 Enter a new username to register.\r")
+            self.client.send(b"332 Enter a new username to register or type 'BACK' for go to previous step.\r")
             username = self.client.recv(1024).decode('utf-8').strip()
 
             # Check if the user wants to go back to the previous step
@@ -335,6 +335,50 @@ class FTPThreadServer(threading.Thread):
             print(f"ERROR in UNSHARE command: {e}")
             self.client.send(b"550 An error occurred while processing the UNSHARE command.\r\n")
 
+    def SHWM(self, cmd):
+        """Handles the SHWM command to display shared permissions for the current user."""
+        try:
+            # Construct the path to the user's JSON file
+            user_json_path = os.path.join(self.server_dir, f"home_{self.current_username}.json")
+            
+            # Check if the user's JSON file exists
+            if not os.path.exists(user_json_path):
+                self.client.send(b"550 No shared permissions file found for the current user.\r\n")
+                return
+
+            # Read the JSON file
+            with open(user_json_path, 'r') as json_file:
+                user_data = json.load(json_file)
+
+            # Get the shared paths and permissions
+            paths = user_data.get("home", {}).get("path", {})
+
+            # If no shared paths, inform the user
+            if not paths:
+                self.client.send(b"550 No shared permissions found for the current user.\r\n")
+                return
+
+            # Send header to the client
+            self.client.send(b"250 Shared permissions:\r\n")
+
+            # Iterate through each path and its permissions
+            for path, permissions in paths.items():
+                # Format the permissions into a readable format
+                permission_string = (
+                    f"Path: {path}\n"
+                    f"  Read: {'Yes' if permissions.get('Read') else 'No'}\n"
+                    f"  Write: {'Yes' if permissions.get('Write') else 'No'}\n"
+                    f"  Create: {'Yes' if permissions.get('Create') else 'No'}\n"
+                    f"  Delete: {'Yes' if permissions.get('Delete') else 'No'}\n"
+                )
+                self.client.send(permission_string.encode('utf-8'))
+
+            # Final success message
+            self.client.send(b"250 End of permissions list.\r\n")
+        except Exception as e:
+            print(f"ERROR in SHWM command: {e}")
+            self.client.send(b"550 An error occurred while processing the SHWM command.\r\n")
+
     def access_check(self, cmd, cdup=False):
         try:
             command = cmd.split(' ', 1)[0].upper()
@@ -428,6 +472,229 @@ class FTPThreadServer(threading.Thread):
             self.close_datasock()
             self.client.close()
             quit()
+
+    def LIST(self, cmd):
+        # Determine the path to use
+        if cmd == "LIST":
+            path_to_list = self.cwd
+        else:
+            # Extract the path after "LIST" and resolve it
+            path_after_cmd = cmd[len("LIST"):].strip()
+            path_to_list = self.resolve_path(path_after_cmd)
+        
+        print('LIST', path_to_list)
+        
+        # Check access to the path
+        if not self.access_check(f"LIST {path_to_list}"):
+            # access_check already handles errors if access is denied
+            return
+        
+        (client_data, client_address) = self.start_datasock()
+
+        try:
+            listdir = os.listdir(path_to_list)
+            if not len(listdir):
+                max_length = 0
+            else:
+                max_length = len(max(listdir, key=len))
+
+            header = '| {:{}} | {:>9} | {:>12} | {:>20} | {:>11} | {:>12} |'.format(
+                'Name', max_length, 'Filetype', 'Filesize', 'Last Modified', 'Permission', 'User/Group')
+            table = '{}\n{}\n{}\n'.format('-' * len(header), header, '-' * len(header))
+            client_data.send(table.encode('utf-8'))
+            
+            for i in listdir:
+                path = os.path.join(path_to_list, i)
+                stat = os.stat(path)
+                data = '| {:{}} | {:>9} | {:>12} | {:>20} | {:>11} | {:>12} |\n'.format(
+                    i, max_length, 'Directory' if os.path.isdir(path) else 'File', 
+                    str(stat.st_size) + 'B', 
+                    time.strftime('%b %d, %Y %H:%M', time.localtime(stat.st_mtime)),
+                    oct(stat.st_mode)[-4:], 
+                    str(stat.st_uid) + '/' + str(stat.st_gid))
+                client_data.send(data.encode('utf-8'))
+            
+            table = '{}\n'.format('-' * len(header))
+            client_data.send(table.encode('utf-8'))
+            
+            self.client.send(b'\r\n226 Directory send OK.\r\n')
+        except Exception as e:
+            print('ERROR: ' + str(self.client_address) + ': ' + str(e))
+            self.client.send(b'426 Connection closed; transfer aborted.\r\n')
+        finally: 
+            client_data.close()
+            self.close_datasock()
+
+    def PWD(self, cmd):
+        relative_path = self.cwd[len(self.server_dir):]
+
+        # Ensure the path starts with a '/'
+        if not relative_path.startswith('/'):
+            relative_path = '/' + relative_path
+        
+        # Send the formatted path to the client
+        self.client.send(f'257 "{relative_path}".\r\n'.encode('utf-8'))
+
+    def CWD(self, cmd):
+        dest = cmd[4:].strip()
+        if not dest:
+            self.client.send(b'501 Missing arguments <directory_name>.\r\n')
+            return
+
+        if not self.access_check(cmd):
+            # access_check already sends an appropriate error message if access is denied
+            return
+
+        # Resolve the destination path
+        dest_path = self.resolve_path(dest)
+
+        # Check if the destination is a valid directory
+        if os.path.isdir(dest_path):
+            self.cwd = dest_path
+            dirname_print = self.hide_abs_path(self.cwd)
+            self.client.send(f'250 OK "{dirname_print}".\r\n'.encode('utf-8'))
+        else:
+            print(f'ERROR: {str(self.client_address)}: No such file or directory.')
+            self.client.send(b'550 No such file or directory for CWD.\r\n')
+
+
+    def CDUP(self, cmd):
+        dest = os.path.abspath(os.path.join(self.cwd, '..'))
+        if not self.access_check(cmd="CDUP", cdup=True):
+            # access_check already sends an appropriate error message if access is denied
+            return
+        
+        if os.path.isdir(dest):
+            self.cwd = dest
+            dirname_print = self.hide_abs_path(self.cwd)
+            self.client.send(f'250 OK "{dirname_print}".\r\n'.encode('utf-8'))
+        else:
+            print('ERROR: ' + str(self.client_address) + ': No such file or directory.')
+            self.client.send(b'550 No such file or directory for CDUP.\r\n')
+
+    def MKD(self, cmd):
+        path = cmd[4:].strip()
+        try:
+            if not path:
+                self.client.send(b'501 Missing arguments <dirname>.\r\n')
+                return
+            elif not self.access_check(cmd):
+                # access_check already sends an appropriate error message if access is denied
+                return
+            else:
+                dirname = self.resolve_path(path)
+                os.mkdir(dirname)
+                dirname_print = self.hide_abs_path(dirname)
+                self.client.send(f'250 Directory created: {dirname_print}.\r\n'.encode('utf-8'))
+        except Exception as e:
+            print('ERROR: ' + str(self.client_address) + ': ' + str(e))
+            dirname_print = self.hide_abs_path(dirname)
+            self.client.send(f'550 Failed to create directory {dirname_print}.'.encode('utf-8'))
+
+    def RMD(self, cmd):
+        path = cmd[4:].strip()
+        try:
+            if not path:
+                self.client.send(b'501 Missing arguments <dirname>.\r\n')
+                return
+            elif not self.access_check(cmd):
+                # access_check already sends an appropriate error message if access is denied
+                return
+            else:
+                dirname = self.resolve_path(path)
+                os.rmdir(dirname)
+                dirname_print = self.hide_abs_path(dirname)
+                self.client.send(f'250 Directory deleted: {dirname_print}.\r\n'.encode('utf-8'))
+        except Exception as e:
+            print('ERROR: ' + str(self.client_address) + ': ' + str(e))
+            dirname_print = self.hide_abs_path(dirname)
+            self.client.send(f'550 Failed to delete directory {dirname_print}.'.encode('utf-8'))
+
+    def DELE(self, cmd):
+        path = cmd[4:].strip()
+        try:
+            if not path:
+                self.client.send(b'501 Missing arguments <filename>.\r\n')
+                return
+            elif not self.access_check(cmd):
+                # access_check already sends an appropriate error message if access is denied
+                return
+            else:
+                filename = self.resolve_path(path)
+                os.remove(filename)
+                filename_print = self.hide_abs_path(filename)
+                self.client.send(f'250 File deleted: {filename_print}.\r\n'.encode('utf-8'))
+        except Exception as e:
+            print('ERROR: ' + str(self.client_address) + ': ' + str(e))
+            filename_print = self.hide_abs_path(filename)
+            self.client.send(f'550 Failed to delete file {filename_print}.'.encode('utf-8'))
+
+    def STOR(self, cmd):
+        # Extract the arguments from the command
+        args = cmd[4:].strip().split(" ", 1)  # Split into at most two parts
+        if len(args) < 2:
+            self.client.send(b'501 Missing arguments <client-path> <server-path>.\r\n')
+            return
+
+        client_path, server_path = args
+        # Resolve the server path
+        server_path = self.resolve_path(server_path)
+        
+        # Access check for the command
+        if not self.access_check(f"STOR {server_path}"):
+            # access_check already sends an appropriate error message if access is denied
+            return
+
+        # Ensure the filename is in the resolved server path
+        fname = os.path.join(server_path)
+        (client_data, client_address) = self.start_datasock()
+        
+        try:
+            with open(fname, "wb") as file_write:
+                while True:
+                    data = client_data.recv(1024)
+                    if not data:
+                        break
+                    file_write.write(data)
+
+            self.client.send(b'226 Transfer complete.\r\n')
+        except Exception as e:
+            print('ERROR: ' + str(self.client_address) + ': ' + str(e))
+            self.client.send(b'425 Error writing file.\r\n')
+        finally:
+            client_data.close()
+            self.close_datasock()
+
+    def RETR(self, cmd):
+        path = cmd[4:].strip()
+        if not path:
+            self.client.send(b'501 Missing arguments <file_or_directory_name>.\r\n')
+            return
+        
+        if not self.access_check(cmd):
+            # access_check already sends an appropriate error message if access is denied
+            return    
+            
+        fname = self.resolve_path(path)
+        if not os.path.exists(fname):
+            self.client.send(b'550 File or directory not found.\r\n')
+        else:
+            (client_data, client_address) = self.start_datasock()
+            try:
+                with open(fname, "rb") as file_read:
+                    data = file_read.read(1024)
+
+                    while data:
+                        client_data.send(data)
+                        data = file_read.read(1024)
+
+                self.client.send(b'226 Transfer complete.\r\n')
+            except Exception as e:
+                print('ERROR: ' + str(self.client_address) + ': ' + str(e))
+                self.client.send(b'426 Connection closed; transfer aborted.\r\n')
+            finally:
+                client_data.close()
+                self.close_datasock()
 
 class FTPserver:
     def __init__(self, port, data_port):
