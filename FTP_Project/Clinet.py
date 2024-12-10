@@ -7,19 +7,19 @@ import sys
 
 class FTPclient:
     def __init__(self, address, port, data_port):
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.address = address
         self.port = int(port)
         self.data_port = int(data_port)
+        self.is_authenticated = False
 
     # Establishes a connection to the server using the specified address and port.
     def create_connection(self):
-
         print('Starting connection to', self.address, ':', self.port)
 
         try:
             server_address = (self.address, self.port)
-            self.sock.connect(server_address)
+            self.client_socket.connect(server_address)
             print('Connected to', self.address, ':', self.port)
         except KeyboardInterrupt:
             self.close_client()
@@ -36,7 +36,7 @@ class FTPclient:
     def close_client(self):
         print('Closing socket connection...')
         try:
-            self.sock.close()
+            self.client_socket.close()
         except:
             pass
         print('FTP client terminating...')
@@ -50,9 +50,8 @@ class FTPclient:
             print('Error during connection:', str(e))
             self.close_client()
 
-        if not self.authenticate():
-            print("Authentication failed. Exiting.")
-            self.close_client()
+        if not self.is_authenticated:
+            self.authenticate()
 
         while True:
             try:
@@ -67,94 +66,114 @@ class FTPclient:
             path = command[4:].strip()
 
             try:
-                self.sock.send(command.encode('utf-8'))
-                data = self.sock.recv(1024).decode('utf-8')
-                print(data)
+                if cmd == 'STOR':
 
-                if cmd == 'QUIT':
-                    self.close_client()
-                elif cmd in ('LIST', 'STOR', 'RETR'):
-                    if data and data[:3] == '125':
-                        func = getattr(self, cmd)
-                        func(path)
-                        data = self.sock.recv(1024).decode('utf-8')
-                        print(data)
+                    self.STOR(path, command)
+                else:
+                    self.client_socket.send(command.encode('utf-8'))
+                    data = self.client_socket.recv(1024).decode('utf-8')
+                    print(data)
+
+                    if cmd == 'QUIT':
+                        self.close_client()
+                    elif cmd in ('LIST', 'RETR'):
+                        if data and data[:3] == '125':
+                            func = getattr(self, cmd)
+                            func(path)
+                            data = self.client_socket.recv(1024).decode('utf-8')
+                            print(data)
             except Exception as e:
                 print('Error:', str(e))
                 self.close_client()
 
-    # Manages user authentication and registration by handling server communication and user input.
+    # Handles user authentication by managing login, registration, and password validation.
     def authenticate(self):
+        wel_response = self.client_socket.recv(1024).decode('utf-8')
+        print(wel_response)
+        while not self.is_authenticated:
 
-        try:
-
-            response = self.sock.recv(1024).decode('utf-8')
+            response = self.client_socket.recv(1024).decode('utf-8')
             print(response)
 
-            if "220" not in response:
-                print("Unexpected server response:", response)
-                return False
+            user_input = input("Enter 'USER username' to login or 'REGISTER' to create an account: ").strip()
+            while not user_input:
+                print("Input cannot be empty. Please try again.")
+                user_input = input("Enter 'USER username' to login or 'REGISTER' to create an account: ").strip()
+            self.client_socket.send(user_input.encode('utf-8'))
 
-            response = self.sock.recv(1024).decode('utf-8')
-            print(response)
+            if user_input.upper() == 'REGISTER':
+                self.register_user()
+                continue
 
-            if "331" in response or "332" in response:
+            if user_input[:5] == 'USER ' and len(user_input) >= 6:
                 while True:
-                    user_input = input("Enter your command: ").strip()
-                    self.sock.send(user_input.encode('utf-8'))
 
-                    response = self.sock.recv(1024).decode('utf-8')
-                    print(response)
+                    password_prompt = self.client_socket.recv(1024).decode('utf-8')
+                    print(password_prompt)
 
-                    if user_input.upper().startswith("REGISTER"):
-                        if "332" in response:
-                            username = input("Enter a new username: ").strip()
-                            self.sock.send(username.encode('utf-8'))
+                    if "Invalid username" in password_prompt:
+                        break
 
-                            response = self.sock.recv(1024).decode('utf-8')
-                            print(response)
-                            if "332" in response:
-                                password = input("Enter a new password: ").strip()
-                                self.sock.send(password.encode('utf-8'))
+                    password_input = input("Enter 'PASS password' or 'CHANGE' to change username: ").strip()
+                    while not password_input:
+                        print("Input cannot be empty. Please try again.")
+                        password_input = input("Enter 'PASS password' or 'CHANGE' to change username: ").strip()
 
-                                response = self.sock.recv(1024).decode('utf-8')
-                                print(response)
-                                if "230" in response:
-                                    print("Registration successful.")
-                                    return True
-                                else:
-                                    print("Registration failed. Try again.")
-                                    return False
+                    self.client_socket.send(password_input.encode('utf-8'))
 
-                    elif user_input.upper().startswith("USER"):
+                    if password_input == "CHANGE":
+                        change_message = self.client_socket.recv(1024).decode('utf-8')
+                        print(change_message)
+                        break
 
-                        if "331" in response:
-                            while True:
-                                password = input("Enter your password in 'PASS password' format: ").strip()
-                                self.sock.send(password.encode('utf-8'))
+                    password_response = self.client_socket.recv(1024).decode('utf-8')
+                    print(password_response)
 
-                                if password.upper().startswith("PASS"):
-                                    response = self.sock.recv(1024).decode('utf-8')
-                                    print(response)
-                                    if "230" in response:
-                                        return True
-                                    else:
-                                        print("Login failed. Invalid credentials. Please try again.")
-
-                                        break
-                                else:
-                                    print("The command you entered is invalid. Please try again.")
-                                    continue
-
-                    else:
-                        print("The command you entered is invalid. Please try again.")
-                        continue  
+                    if "successful" in password_response:
+                        self.is_authenticated = True
+                        break
             else:
-                print("Authentication process finished or failed.")
-                return False
+                invalid_user_message = self.client_socket.recv(1024).decode('utf-8')
+                print(invalid_user_message)
 
-        except Exception as e:
-            print("Error during authentication:", str(e))
+    # Manages user registration by collecting a new username and password, and verifying availability.
+    def register_user(self):
+        while True:
+
+            register_prompt = self.client_socket.recv(1024).decode('utf-8')
+            print(register_prompt)
+
+            username = input("Enter a new username to register or type 'BACK' for go to prev step: ").strip()
+            while not username:
+                print("Input cannot be empty. Please try again.")
+                username = input("Enter a new username to register or type 'BACK' for go to prev step: ").strip()
+
+            self.client_socket.send(username.encode('utf-8'))
+
+            if username.upper() == "BACK":
+                back_message = self.client_socket.recv(1024).decode('utf-8')
+                print(back_message)
+                break
+
+            registration_response = self.client_socket.recv(1024).decode('utf-8')
+            print(registration_response)
+
+            if "choose another one" in registration_response:
+                continue
+
+            password = input("Enter a password for your account: ").strip()
+            while not password:
+                print("Input cannot be empty. Please try again.")
+                password = input("Enter a password for your account: ").strip()
+
+            self.client_socket.send(password.encode('utf-8'))
+
+            final_response = self.client_socket.recv(1024).decode('utf-8')
+            print(final_response)
+
+            if "successfully" in final_response.lower():
+                self.is_authenticated = True
+                break
 
     # Retrieves and displays the directory listing from the server using the specified path.
     def LIST(self, path):
@@ -191,67 +210,69 @@ class FTPclient:
             self.datasock.close()
 
     # Uploads a local file to the server using the STOR command.
-    def STOR(self, path):
+    def STOR(self, path, command):
+        print(f"Processing paths: {path}")
 
-        print(f"Uploading {path} to the server...")
         try:
-            if not os.path.isfile(path):
-                print(f"Error: File '{path}' does not exist.")
+
+            parts = path.split(' ', 1)
+            client_path, server_path = parts
+
+            if not os.path.isfile(client_path):
+                print(f"Error: File '{client_path}' does not exist.")
                 return
 
-            self.sock.send(f"STOR {os.path.basename(path)}\r\n".encode('utf-8'))
-            response = self.sock.recv(1024).decode('utf-8')
+            self.client_socket.send(command.encode('utf-8'))
+            response = self.client_socket.recv(1024).decode('utf-8')
             print(response)
 
-            if "150" in response:
+            if response and response[:3] == '125':
+                print("150 Preparing to transfer file.")
                 self.connect_datasock()
-                with open(path, 'rb') as f:
+                with open(client_path, 'rb') as f:
                     while True:
                         data = f.read(1024)
                         if not data:
                             break
                         self.datasock.send(data)
                 self.datasock.close()
-                print(f"File '{path}' uploaded successfully.")
+                end_response = self.client_socket.recv(1024).decode('utf-8')
+                print(end_response)
             else:
                 print("Error:", response)
+
         except Exception as e:
             print("Error during STOR:", str(e))
 
     # Shares a file or directory with another user.
     def SHARE(self, command):
-
         print(f"Sharing: {command}")
         try:
-            self.sock.send(f"SHARE {command}\r\n".encode('utf-8'))
-            response = self.sock.recv(1024).decode('utf-8')
+            self.client_socket.send(f"SHARE {command}\r\n".encode('utf-8'))
+            response = self.client_socket.recv(1024).decode('utf-8')
             print(response)
         except Exception as e:
             print("Error during SHARE:", str(e))
 
     # Removes sharing permissions for a file or directory.
     def UNSHARE(self, command):
-
         print(f"Unsharing: {command}")
         try:
-            self.sock.send(f"UNSHARE {command}\r\n".encode('utf-8'))
-            response = self.sock.recv(1024).decode('utf-8')
+            self.client_socket.send(f"UNSHARE {command}\r\n".encode('utf-8'))
+            response = self.client_socket.recv(1024).decode('utf-8')
             print(response)
         except Exception as e:
             print("Error during UNSHARE:", str(e))
 
     # Displays shared files and directories.
     def SHWM(self):
-
         print("Displaying shared files and directories...")
         try:
-            self.sock.send(b"SHWM\r\n")
-            response = self.sock.recv(1024).decode('utf-8')
+            self.client_socket.send(b"SHWM\r\n")
+            response = self.client_sockets.recv(1024).decode('utf-8')
             print(response)
         except Exception as e:
             print("Error during SHWM:", str(e))
-
-
 
 
 
