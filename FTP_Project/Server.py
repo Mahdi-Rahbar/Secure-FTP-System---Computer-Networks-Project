@@ -74,7 +74,7 @@ class FTPThreadServer(threading.Thread):
                     }
                 }
             }
-            with open(os.path.join(self.server_dir, f"home_{username}.json"), 'w') as json_file:
+            with open(os.path.join(self.server_dir, f"access_{username}.json"), 'w') as json_file:
                 json.dump(user_json, json_file)
 
             self.current_username = username
@@ -229,7 +229,7 @@ class FTPThreadServer(threading.Thread):
             target_username = self.client.recv(1024).decode('utf-8').strip()
 
             # Check if the target user exists
-            target_json_path = os.path.join(self.server_dir, f"home_{target_username}.json")
+            target_json_path = os.path.join(self.server_dir, f"access_{target_username}.json")
             if not os.path.exists(target_json_path):
                 self.client.send(b"530 Invalid username. User does not exist.\r\n")
                 return
@@ -304,7 +304,7 @@ class FTPThreadServer(threading.Thread):
             target_username = self.client.recv(1024).decode('utf-8').strip()
 
             # Check if the target user exists
-            target_json_path = os.path.join(self.server_dir, f"home_{target_username}.json")
+            target_json_path = os.path.join(self.server_dir, f"access_{target_username}.json")
             if not os.path.exists(target_json_path):
                 self.client.send(b"530 Invalid username. User does not exist.\r\n")
                 return
@@ -339,7 +339,7 @@ class FTPThreadServer(threading.Thread):
         """Handles the SHWM command to display shared permissions for the current user."""
         try:
             # Construct the path to the user's JSON file
-            user_json_path = os.path.join(self.server_dir, f"home_{self.current_username}.json")
+            user_json_path = os.path.join(self.server_dir, f"access_{self.current_username}.json")
             
             # Check if the user's JSON file exists
             if not os.path.exists(user_json_path):
@@ -385,12 +385,13 @@ class FTPThreadServer(threading.Thread):
             raw_path = cmd.rsplit(' ', 1)[-1].strip()
 
             # Resolve the raw path to an absolute path
-            path = self.resolve_path(raw_path)
+            if cdup == False:
+                path = self.resolve_path(raw_path)
 
-            # Ensure the path exists
-            if not os.path.exists(path):
-                self.client.send(b"550 Path does not exist.\r\n")
-                return False
+                # Ensure the path exists
+                if not os.path.exists(path):
+                    self.client.send(b"550 Path does not exist.\r\n")
+                    return False
             
             if command == "SHARE" or command == "UNSHARE":
                 # Get the user's home directory prefix
@@ -405,7 +406,7 @@ class FTPThreadServer(threading.Thread):
 
 
             # Load user's access permissions from their JSON file
-            user_json_path = os.path.join(self.server_dir, f"home_{self.current_username}.json")
+            user_json_path = os.path.join(self.server_dir, f"access_{self.current_username}.json")
             if not os.path.exists(user_json_path):
                 self.client.send(b"550 User configuration not found.\r\n")
                 return False
@@ -479,7 +480,7 @@ class FTPThreadServer(threading.Thread):
             path_to_list = self.cwd
         else:
             # Extract the path after "LIST" and resolve it
-            path_after_cmd = cmd[len("LIST"):].strip()
+            path_after_cmd = cmd[len("LIST "):].strip()
             path_to_list = self.resolve_path(path_after_cmd)
         
         print('LIST', path_to_list)
@@ -529,7 +530,7 @@ class FTPThreadServer(threading.Thread):
         relative_path = self.cwd[len(self.server_dir):]
 
         # Ensure the path starts with a '/'
-        if not relative_path.startswith('/'):
+        if not relative_path.startswith('/') and not relative_path.startswith('\\'):
             relative_path = '/' + relative_path
         
         # Send the formatted path to the client
@@ -635,6 +636,10 @@ class FTPThreadServer(threading.Thread):
         if len(args) < 2:
             self.client.send(b'501 Missing arguments <client-path> <server-path>.\r\n')
             return
+        
+        if len(args) > 2:
+            self.client.send(b'501 Additional argument(s).\r\n')
+            return
 
         client_path, server_path = args
         # Resolve the server path
@@ -646,11 +651,11 @@ class FTPThreadServer(threading.Thread):
             return
 
         # Ensure the filename is in the resolved server path
-        fname = os.path.join(server_path)
+        fname = os.path.join(server_path, os.path.basename(client_path))
         (client_data, client_address) = self.start_datasock()
         
         try:
-            with open(fname, "wb") as file_write:
+            with open(fname, 'wb') as file_write:
                 while True:
                     data = client_data.recv(1024)
                     if not data:
@@ -660,7 +665,6 @@ class FTPThreadServer(threading.Thread):
             self.client.send(b'226 Transfer complete.\r\n')
         except Exception as e:
             print('ERROR: ' + str(self.client_address) + ': ' + str(e))
-            self.client.send(b'425 Error writing file.\r\n')
         finally:
             client_data.close()
             self.close_datasock()
