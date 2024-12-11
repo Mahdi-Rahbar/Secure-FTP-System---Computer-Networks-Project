@@ -1,5 +1,3 @@
-# Mahdi Rahbar && Kiarash Gilanian
-
 import socket
 import os
 import sys
@@ -199,23 +197,26 @@ class FTPThreadServer(threading.Thread):
         relative_path = path_to[len(self.server_dir):]
 
         # Ensure the path starts with a '/'
-        if not relative_path.startswith('/'):
+        if not relative_path.startswith('/') and not relative_path.startswith('\\'):
             relative_path = '/' + relative_path
         
         return relative_path
 
-    def SHARE(self, cmd):
+    def SHAR(self, cmd):
         """Handles the SHARE command."""
         try:
-            # Extract directory or file address
-            _, file_or_dir_path = cmd.split(' ', 1)
-            
+            try:
+                _, file_or_dir_path = cmd.split(' ', 1)
+            except ValueError:
+                self.client.send(b'501 Missing arguments <file_or_directory_name>.\r\n')
+                return
+
             if not file_or_dir_path:
                 self.client.send(b'501 Missing arguments <file_or_directory_name>.\r\n')
                 return
             
             # Perform access check before proceeding
-            if not self.access_check(f"SHARE {file_or_dir_path}"):
+            if not self.access_check(f"SHAR {file_or_dir_path}"):
                 # access_check already sends an appropriate error message if access is denied
                 return
 
@@ -232,6 +233,10 @@ class FTPThreadServer(threading.Thread):
             target_json_path = os.path.join(self.server_dir, f"access_{target_username}.json")
             if not os.path.exists(target_json_path):
                 self.client.send(b"530 Invalid username. User does not exist.\r\n")
+                return
+            
+            if target_username == self.current_username:
+                self.client.send(b"530 Invalid username. You cannot share with yourself.\r\n")
                 return
 
             # Ask for the access level as a 4-bit number
@@ -272,10 +277,10 @@ class FTPThreadServer(threading.Thread):
 
             self.client.send(b"230 File or directory shared successfully with the specified access level.\r\n")
         except Exception as e:
-            print(f"ERROR in SHARE command: {e}")
-            self.client.send(b"550 An error occurred while processing the SHARE command.\r\n")
+            print(f"ERROR in SHAR command: {e}")
+            self.client.send(b"550 An error occurred while processing the SHAR command.\r\n")
 
-    def UNSHARE(self, cmd):
+    def UNSH(self, cmd):
         """Handles the UNSHARE command."""
         try:
             # Extract the file or directory path
@@ -290,7 +295,7 @@ class FTPThreadServer(threading.Thread):
                 return
 
             # Perform access check before proceeding
-            if not self.access_check(f"UNSHARE {file_or_dir_path}"):
+            if not self.access_check(f"UNSH {file_or_dir_path}"):
                 # access_check already sends an appropriate error message if access is denied
                 return
 
@@ -307,6 +312,10 @@ class FTPThreadServer(threading.Thread):
             target_json_path = os.path.join(self.server_dir, f"access_{target_username}.json")
             if not os.path.exists(target_json_path):
                 self.client.send(b"530 Invalid username. User does not exist.\r\n")
+                return
+            
+            if target_username == self.current_username:
+                self.client.send(b"530 Invalid username. You cannot unshare with yourself.\r\n")
                 return
 
             # Read the target user's JSON file
@@ -332,8 +341,8 @@ class FTPThreadServer(threading.Thread):
             else:
                 self.client.send(b"550 The username does not have any permissions for the specified file or directory.\r\n")
         except Exception as e:
-            print(f"ERROR in UNSHARE command: {e}")
-            self.client.send(b"550 An error occurred while processing the UNSHARE command.\r\n")
+            print(f"ERROR in UNSH command: {e}")
+            self.client.send(b"550 An error occurred while processing the UNSH command.\r\n")
 
     def SHWM(self, cmd):
         """Handles the SHWM command to display shared permissions for the current user."""
@@ -364,8 +373,9 @@ class FTPThreadServer(threading.Thread):
             # Iterate through each path and its permissions
             for path, permissions in paths.items():
                 # Format the permissions into a readable format
+                print_path = self.hide_abs_path(path)
                 permission_string = (
-                    f"Path: {path}\n"
+                    f"Path: {print_path}\n"
                     f"  Read: {'Yes' if permissions.get('Read') else 'No'}\n"
                     f"  Write: {'Yes' if permissions.get('Write') else 'No'}\n"
                     f"  Create: {'Yes' if permissions.get('Create') else 'No'}\n"
@@ -393,7 +403,7 @@ class FTPThreadServer(threading.Thread):
                     self.client.send(b"550 Path does not exist.\r\n")
                     return False
             
-            if command == "SHARE" or command == "UNSHARE":
+            if command == "SHAR" or command == "UNSH":
                 # Get the user's home directory prefix
                 user_home_prefix = f"home_{self.current_username}"
                 
@@ -401,7 +411,7 @@ class FTPThreadServer(threading.Thread):
                 if path.startswith(os.path.join(self.server_dir, user_home_prefix)):
                     return True
                 else:
-                    self.client.send(b"You cannot share or unshare a file or directory outside of your home directory.\r\n")
+                    self.client.send(b"550 You cannot share or unshare a file or directory outside of your home directory.\r\n")
                     return False
 
 
