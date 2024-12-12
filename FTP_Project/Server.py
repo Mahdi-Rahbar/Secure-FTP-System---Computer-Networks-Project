@@ -5,17 +5,19 @@ import os
 import sys
 import threading
 import json
+import ssl
 import time
 
 class FTPThreadServer(threading.Thread):
-    def __init__(self, client_data, local_ip, data_port):
+    def __init__(self, client_data, local_ip, data_port, ssl_context):
         client, client_address = client_data
-        self.client = client
+        self.client = ssl_context.wrap_socket(client, server_side=True)
         self.client_address = client_address
         self.server_dir = "C:\\Users\\User\\Desktop\\Server"
         self.cwd = "C:\\Users\\User\\Desktop\\Server"  # Default server path
         self.current_username = None
         self.data_address = (local_ip, data_port)
+        self.ssl_context = ssl_context
         threading.Thread.__init__(self)
         # Credentials storage (username-password pairs)
         self.credentials = {"admin": "12345678"}
@@ -79,7 +81,7 @@ class FTPThreadServer(threading.Thread):
 
             self.current_username = username
 
-            self.cwd = os.path.join(self.cwd, f"home_{username[5:]}")  # Change cwd to user's home folder
+            self.cwd = os.path.join(self.cwd, f"home_{username}")  # Change cwd to user's home folder
             self.client.send(b"230 User registered successfully. You are logged in.\r\n")
             return True
 
@@ -149,7 +151,12 @@ class FTPThreadServer(threading.Thread):
             self.datasock.listen(5)
             print('Data socket is started. Listening to ' + str(self.data_address) + '...')
             self.client.send(b'125 Data connection already open; transfer starting.\r\n')
-            return self.datasock.accept()
+
+            # Accept a data connection and wrap it with SSL
+            data_client, data_client_address = self.datasock.accept()
+            secure_data_client = self.ssl_context.wrap_socket(data_client, server_side=True)
+            # print(f"Data connection established with {data_client_address}")
+            return secure_data_client, data_client_address
         except Exception as e:
             print('ERROR: ' + str(self.client_address) + ': ' + str(e))
             self.close_datasock()
@@ -502,7 +509,7 @@ class FTPThreadServer(threading.Thread):
             # access_check already handles errors if access is denied
             return
         
-        (client_data, client_address) = self.start_datasock()
+        (client_d, client_address) = self.start_datasock()
 
         try:
             listdir = os.listdir(path_to_list)
@@ -514,7 +521,7 @@ class FTPThreadServer(threading.Thread):
             header = '| {:{}} | {:>9} | {:>12} | {:>20} | {:>11} | {:>12} |'.format(
                 'Name', max_length, 'Filetype', 'Filesize', 'Last Modified', 'Permission', 'User/Group')
             table = '{}\n{}\n{}\n'.format('-' * len(header), header, '-' * len(header))
-            client_data.send(table.encode('utf-8'))
+            client_d.send(table.encode('utf-8'))
             
             for i in listdir:
                 path = os.path.join(path_to_list, i)
@@ -525,17 +532,17 @@ class FTPThreadServer(threading.Thread):
                     time.strftime('%b %d, %Y %H:%M', time.localtime(stat.st_mtime)),
                     oct(stat.st_mode)[-4:], 
                     str(stat.st_uid) + '/' + str(stat.st_gid))
-                client_data.send(data.encode('utf-8'))
+                client_d.send(data.encode('utf-8'))
             
             table = '{}\n'.format('-' * len(header))
-            client_data.send(table.encode('utf-8'))
+            client_d.send(table.encode('utf-8'))
             
             self.client.send(b'\r\n226 Directory send OK.\r\n')
         except Exception as e:
             print('ERROR: ' + str(self.client_address) + ': ' + str(e))
             self.client.send(b'426 Connection closed; transfer aborted.\r\n')
         finally: 
-            client_data.close()
+            client_d.close()
             self.close_datasock()
 
     def PWD(self, cmd):
@@ -664,12 +671,12 @@ class FTPThreadServer(threading.Thread):
 
         # Ensure the filename is in the resolved server path
         fname = os.path.join(server_path, os.path.basename(client_path))
-        (client_data, client_address) = self.start_datasock()
+        (client_d, client_address) = self.start_datasock()
         
         try:
             with open(fname, 'wb') as file_write:
                 while True:
-                    data = client_data.recv(1024)
+                    data = client_d.recv(1024)
                     if not data:
                         break
                     file_write.write(data)
@@ -678,7 +685,7 @@ class FTPThreadServer(threading.Thread):
         except Exception as e:
             print('ERROR: ' + str(self.client_address) + ': ' + str(e))
         finally:
-            client_data.close()
+            client_d.close()
             self.close_datasock()
 
     def RETR(self, cmd):
@@ -695,13 +702,13 @@ class FTPThreadServer(threading.Thread):
         if not os.path.exists(fname):
             self.client.send(b'550 File or directory not found.\r\n')
         else:
-            (client_data, client_address) = self.start_datasock()
+            (client_d, client_address) = self.start_datasock()
             try:
                 with open(fname, "rb") as file_read:
                     data = file_read.read(1024)
 
                     while data:
-                        client_data.send(data)
+                        client_d.send(data)
                         data = file_read.read(1024)
 
                 self.client.send(b'226 Transfer complete.\r\n')
@@ -709,14 +716,16 @@ class FTPThreadServer(threading.Thread):
                 print('ERROR: ' + str(self.client_address) + ': ' + str(e))
                 self.client.send(b'426 Connection closed; transfer aborted.\r\n')
             finally:
-                client_data.close()
+                client_d.close()
                 self.close_datasock()
 
 class FTPserver:
-    def __init__(self, port, data_port):
+    def __init__(self, port, data_port, certfile, keyfile):
         self.address = '0.0.0.0'
         self.port = int(port)
         self.data_port = int(data_port)
+        self.ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        self.ssl_context.load_cert_chain(certfile=certfile, keyfile=keyfile)
 
     def start_sock(self):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -724,7 +733,7 @@ class FTPserver:
         server_address = (self.address, self.port)
 
         try:
-            print('Creating data socket on', self.address, ':', self.port, '...')
+            print('Creating server socket on', self.address, ':', self.port, '...')
             self.sock.bind(server_address)
             self.sock.listen(5)
             print('Server is up. Listening to', self.address, ':', self.port)
@@ -738,7 +747,8 @@ class FTPserver:
         try:
             while True:
                 print('Waiting for a connection')
-                thread = FTPThreadServer(self.sock.accept(), self.address, self.data_port)
+                client_data = self.sock.accept()
+                thread = FTPThreadServer(client_data, self.address, self.data_port, self.ssl_context)
                 thread.daemon = True
                 thread.start()
         except KeyboardInterrupt:
@@ -756,5 +766,8 @@ data_port = input("Data port - if left empty, default port is 10020: ")
 if not data_port:
     data_port = 10020
 
-server = FTPserver(port, data_port)
+certfile = "C:\\Users\\User\\Desktop\\Server\\server.crt"
+keyfile = "C:\\Users\\User\\Desktop\\Server\\server.key"
+
+server = FTPserver(port, data_port, certfile, keyfile)
 server.start()
