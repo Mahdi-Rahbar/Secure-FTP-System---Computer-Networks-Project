@@ -3,25 +3,31 @@
 import socket
 import os
 import sys
+import ssl
+import time
 
 
 class FTPclient:
     def __init__(self, address, port, data_port):
-        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.address = address
         self.port = int(port)
         self.data_port = int(data_port)
         self.is_authenticated = False
+        self.ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
 
     # Establishes a connection to the server using the specified address and port.
     def create_connection(self):
         print('Starting connection to', self.address, ':', self.port)
 
         try:
-            server_address = (self.address, self.port)
-            self.client_socket.connect(server_address)
-            print('Connected to', self.address, ':', self.port)
-        except KeyboardInterrupt:
+            raw_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            raw_socket.connect((self.address, self.port))
+
+            # Wrap the socket with TLS
+            self.client_socket = self.ssl_context.wrap_socket(raw_socket, server_hostname=self.address)
+            print('Connected to', self.address, ':', self.port, 'with TLS')
+        except ssl.SSLError as ssl_error:
+            print('SSL error:', str(ssl_error))
             self.close_client()
         except Exception as e:
             print('Connection to', self.address, ':', self.port, 'failed:', str(e))
@@ -29,8 +35,18 @@ class FTPclient:
 
     # Establishes a data connection to the server using the specified address and data port.
     def connect_datasock(self):
-        self.datasock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.datasock.connect((self.address, self.data_port))
+        try:
+            raw_datasock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            raw_datasock.connect((self.address, self.data_port))
+
+            # Wrap the data socket with TLS
+            self.datasock = self.ssl_context.wrap_socket(raw_datasock, server_hostname=self.address)
+        except ssl.SSLError as ssl_error:
+            print('SSL error on data socket:', str(ssl_error))
+            self.close_client()
+        except Exception as e:
+            print('Error during data connection:', str(e))
+            self.close_client()
 
     # Closes the socket connection and terminates the FTP client.
     def close_client(self):
@@ -67,8 +83,13 @@ class FTPclient:
 
             try:
                 if cmd == 'STOR':
-
                     self.STOR(path, command)
+                elif cmd == 'SHAR':
+                    self.SHAR(command)
+                elif cmd == 'UNSH':
+                    self.UNSH(command)
+                elif cmd == 'SHWM':
+                    self.SHWM()
                 else:
                     self.client_socket.send(command.encode('utf-8'))
                     data = self.client_socket.recv(1024).decode('utf-8')
@@ -245,32 +266,82 @@ class FTPclient:
             print("Error during STOR:", str(e))
 
     # Shares a file or directory with another user.
-    def SHARE(self, command):
-        print(f"Sharing: {command}")
+    def SHAR(self, command):
         try:
-            self.client_socket.send(f"SHARE {command}\r\n".encode('utf-8'))
+            self.client_socket.send(command.encode('utf-8'))
             response = self.client_socket.recv(1024).decode('utf-8')
             print(response)
+            if response.startswith("550") or response.startswith("501"):
+                return
+            if response.startswith("332 Enter the username to share with:"):
+                target_username = input("Enter the username to share with: ")
+                while not target_username:
+                    print("Input cannot be empty. Please try again.")
+                    target_username = input("Enter the username to share with: ")
+                self.client_socket.send(target_username.encode('utf-8'))
+                response = self.client_socket.recv(1024).decode('utf-8')
+                print(response)
+                if response.startswith("530"):
+                    return
+
+            if response.startswith("332 Enter the access level as a number (0-15):"):
+                access_level = int(input("Enter the access level (0-15): "))
+                while not access_level:
+                    print("Input cannot be empty. Please try again.")
+                    access_level = int(input("Enter the access level (0-15): "))
+                self.client_socket.send(str(access_level).encode('utf-8'))
+                response = self.client_socket.recv(1024).decode('utf-8')
+                print(response)
+
+                if response.startswith("530"):
+                    return
+
+            if response.startswith("230 File or directory shared successfully"):
+                print("File or directory shared successfully.")
+
         except Exception as e:
             print("Error during SHARE:", str(e))
 
     # Removes sharing permissions for a file or directory.
-    def UNSHARE(self, command):
-        print(f"Unsharing: {command}")
+    def UNSH(self, command):
         try:
-            self.client_socket.send(f"UNSHARE {command}\r\n".encode('utf-8'))
+            self.client_socket.send(command.encode('utf-8'))
             response = self.client_socket.recv(1024).decode('utf-8')
             print(response)
+            if response.startswith("550") or response.startswith("501"):
+                return
+            if response.startswith("332"):
+                target_username = input("Enter the username to unshare with: ").strip()
+                while not target_username:
+                    print("Input cannot be empty. Please try again.")
+                    target_username = input("Enter the username to unshare with: ")
+                self.client_socket.send(target_username.encode('utf-8'))
+                response = self.client_socket.recv(1024).decode('utf-8').strip()
+                print(response)
+                return
         except Exception as e:
             print("Error during UNSHARE:", str(e))
 
     # Displays shared files and directories.
     def SHWM(self):
-        print("Displaying shared files and directories...")
         try:
-            self.client_socket.send(b"SHWM\r\n")
-            response = self.client_sockets.recv(1024).decode('utf-8')
+            self.client_socket.send(b"SHWM\r")
+            response = self.client_socket.recv(1024).decode('utf-8')
             print(response)
+            if response.startswith("550"):
+                return
+            response = b''
+            while True:
+                data = self.client_socket.recv(1024)
+                if not data:
+                    break
+                response += data
+
+                if b"250 End of permissions list." in response or b"550" in response:
+                    break
+
+            decoded_response = response.decode('utf-8')
+            print(decoded_response)
         except Exception as e:
             print("Error during SHWM:", str(e))
 
