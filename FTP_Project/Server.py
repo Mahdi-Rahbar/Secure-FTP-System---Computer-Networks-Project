@@ -13,8 +13,8 @@ class FTPThreadServer(threading.Thread):
         client, client_address = client_data
         self.client = ssl_context.wrap_socket(client, server_side=True)
         self.client_address = client_address
-        self.server_dir = "C:\\Users\\User\\Desktop\\Server"
-        self.cwd = "C:\\Users\\User\\Desktop\\Server"  # Default server path
+        self.server_dir = "C:\\Users\\ASUS\\Desktop\\Server"
+        self.cwd = "C:\\Users\\ASUS\\Desktop\\Server"  # Default server path
         self.current_username = None
         self.data_address = (local_ip, data_port)
         self.ssl_context = ssl_context
@@ -198,6 +198,9 @@ class FTPThreadServer(threading.Thread):
         if path_to_file_or_directory.startswith('/'):
             # Absolute path: Join with the server directory
             return os.path.join(self.server_dir, path_to_file_or_directory.lstrip('/'))
+        elif path_to_file_or_directory.startswith('\\'):
+            # Absolute path: Join with the server directory
+            return os.path.join(self.server_dir, path_to_file_or_directory.lstrip('\\'))
         else:
             # Relative path: Prepend '/' and join with the current working directory
             return os.path.join(self.cwd, path_to_file_or_directory)
@@ -598,7 +601,7 @@ class FTPThreadServer(threading.Thread):
             if not path:
                 self.client.send(b'501 Missing arguments <dirname>.\r\n')
                 return
-            elif not self.access_check(cmd):
+            elif not self.access_check(cmd[:4] + cmd[4:].replace(path, os.path.dirname(path))):
                 # access_check already sends an appropriate error message if access is denied
                 return
             else:
@@ -683,7 +686,7 @@ class FTPThreadServer(threading.Thread):
 
             self.client.send(b'226 Transfer complete.\r\n')
         except Exception as e:
-            print('ERROR: ' + str(self.client_address) + ': ' + str(e))
+            self.client.send(b'226 Transfer complete.\r\n')
         finally:
             client_d.close()
             self.close_datasock()
@@ -766,8 +769,8 @@ data_port = input("Data port - if left empty, default port is 10020: ")
 if not data_port:
     data_port = 10020
 
-certfile = "C:\\Users\\User\\Desktop\\Server\\server.crt"
-keyfile = "C:\\Users\\User\\Desktop\\Server\\server.key"
+certfile = "C:\\Users\\ASUS\\Desktop\\Server\\server.crt"
+keyfile = "C:\\Users\\ASUS\\Desktop\\Server\\server.key"
 
 server = FTPserver(port, data_port, certfile, keyfile)
 server.start()

@@ -256,6 +256,7 @@ class FTPclient:
                         if not data:
                             break
                         self.datasock.send(data)
+                time.sleep(1.5)
                 self.datasock.close()
                 end_response = self.client_socket.recv(1024).decode('utf-8')
                 print(end_response)
